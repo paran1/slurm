@@ -661,6 +661,80 @@ static time_t _next_reset(uint16_t reset_period, time_t last_reset)
 	return mktime(&last_tm);
 }
 
+/*
+  When restarting slurmctld, acct_policy.c will run
+  acct_policy_job_begin() for already running jobs and set
+  grp_used_cpu_run_secs to the initial value. We have to correct the
+  values here after we know when the decay thread last ran.
+*/
+uint32_t _init_grp_used_cpu_run_secs(time_t last_ran)
+{
+	struct job_record *job_ptr = NULL;
+	ListIterator itr;
+	assoc_mgr_lock_t locks = { WRITE_LOCK, NO_LOCK,
+				   WRITE_LOCK, NO_LOCK, NO_LOCK };
+	slurmctld_lock_t job_read_lock =
+		{ NO_LOCK, READ_LOCK, NO_LOCK, NO_LOCK };
+	int delta;
+	slurmdb_qos_rec_t *qos;
+	slurmdb_association_rec_t *assoc;
+
+	if(priority_debug)
+		info("Initializing grp_used_cpu_run_secs");
+	if (!(job_list && list_count(job_list))) {
+	    return SLURM_ERROR;
+	}
+
+	lock_slurmctld(job_read_lock);
+	itr = list_iterator_create(job_list);
+	if (itr == NULL)
+		fatal("list_iterator_create: malloc failure");
+	
+	while ((job_ptr = list_next(itr))) {
+		if (priority_debug)
+			debug2("job: %u",job_ptr->job_id);
+		qos = NULL;
+		assoc = NULL;
+		delta = 0;
+
+		if (!IS_JOB_RUNNING(job_ptr))
+			continue;
+
+		if (job_ptr->start_time > last_ran) {
+			continue;
+		}
+		delta = last_ran - job_ptr->start_time;
+
+		assoc_mgr_lock(&locks);
+		qos = (slurmdb_qos_rec_t *)job_ptr->qos_ptr;
+		assoc = (slurmdb_association_rec_t *)
+		job_ptr->assoc_ptr;
+
+		if(qos) {
+			if (priority_debug)
+				debug4("Subtracting %u from qos %u grp_used_cpu_run_secs %lu = %lu",
+					job_ptr->total_cpus*delta,
+					qos->id,
+					qos->usage->grp_used_cpu_run_secs,
+					qos->usage->grp_used_cpu_run_secs - (job_ptr->total_cpus * delta));
+		 	qos->usage->grp_used_cpu_run_secs -= job_ptr->total_cpus * delta;
+		}
+		while (assoc) {
+			if (priority_debug)
+				debug4("Subtracting %u from assoc %u grp_used_cpu_run_secs %lu = %lu",
+					job_ptr->total_cpus*delta,
+					assoc->id,
+					assoc->usage->grp_used_cpu_run_secs,
+					assoc->usage->grp_used_cpu_run_secs - (job_ptr->total_cpus * delta));
+			assoc->usage->grp_used_cpu_run_secs -= job_ptr->total_cpus * delta;
+			assoc = assoc->usage->parent_assoc_ptr;
+		}
+		assoc_mgr_unlock(&locks);    
+	}
+	list_iterator_destroy(itr);
+	unlock_slurmctld(job_read_lock);
+}
+  
 static void *_decay_thread(void *no_data)
 {
 	struct job_record *job_ptr = NULL;
@@ -699,6 +773,8 @@ static void *_decay_thread(void *no_data)
 	if (last_reset == 0)
 		last_reset = start_time;
 
+	_init_grp_used_cpu_run_secs(last_ran);
+	
 	while (1) {
 		time_t now = time(NULL);
 		int run_delta = 0;
@@ -847,6 +923,23 @@ static void *_decay_thread(void *no_data)
 					qos->usage->grp_used_wall += run_decay;
 					qos->usage->usage_raw +=
 						(long double)real_decay;
+					if (qos->usage->grp_used_cpu_run_secs >=
+					    job_ptr->total_cpus * run_delta) {
+						if(priority_debug)
+							debug4("grp_used_cpu_run_secs is %lu, will subtract %u",
+							       qos->usage->grp_used_cpu_run_secs,
+							       job_ptr->total_cpus * run_delta);
+						qos->usage->grp_used_cpu_run_secs -=
+						  job_ptr->total_cpus * run_delta;
+					} else {
+						if (priority_debug)
+							debug4("jobid %u, qos %s: setting grp_used_cpu_run_secs "
+							       "to 0 because %lu < %i",
+							       job_ptr->job_id, qos->name,
+							       qos->usage->grp_used_cpu_run_secs,
+							       job_ptr->total_cpus * run_delta);
+						qos->usage->grp_used_cpu_run_secs = 0;
+					}
 				}
 
 				/* We want to do this all the way up
@@ -856,6 +949,24 @@ static void *_decay_thread(void *no_data)
 				   and use that to normalize against.
 				*/
 				while (assoc) {
+					if (assoc->usage->grp_used_cpu_run_secs >=
+					    job_ptr->total_cpus * run_delta) {
+						if(priority_debug)
+							debug4("grp_used_cpu_run_secs is %lu, will subtract %u",
+							        assoc->usage->grp_used_cpu_run_secs,
+							        job_ptr->total_cpus*run_delta);
+						assoc->usage->grp_used_cpu_run_secs -=
+						  job_ptr->total_cpus * run_delta;
+					} else {
+						if (priority_debug)
+							debug4("jobid %u, assoc %u: setting grp_used_cpu_run_secs "
+							       "to 0 because %lu < %i",
+							       job_ptr->job_id, assoc->id,
+							       assoc->usage->grp_used_cpu_run_secs,
+							       job_ptr->total_cpus * run_delta);
+						assoc->usage->grp_used_cpu_run_secs = 0;
+					}
+
 					assoc->usage->grp_used_wall +=
 						run_decay;
 					assoc->usage->usage_raw +=
@@ -865,13 +976,16 @@ static void *_decay_thread(void *no_data)
 						     "assoc %u (user='%s' "
 						     "acct='%s') raw usage "
 						     "is now %Lf.  Group wall "
-						     "added %f making it %f.",
+						     "added %f making it %f. "
+						     "GrpCPURunMins is %lu",
 						     real_decay, assoc->id,
 						     assoc->user, assoc->acct,
 						     assoc->usage->usage_raw,
 						     run_decay,
 						     assoc->usage->
-						     grp_used_wall);
+						     grp_used_wall,
+						     assoc->usage->
+						     grp_used_cpu_run_secs);
 					assoc = assoc->usage->parent_assoc_ptr;
 				}
 				assoc_mgr_unlock(&locks);

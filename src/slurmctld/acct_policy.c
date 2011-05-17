@@ -159,6 +159,7 @@ static void _adjust_limit_usage(int type, struct job_record *job_ptr)
 			qos_ptr->usage->grp_used_jobs++;
 			qos_ptr->usage->grp_used_cpus += job_ptr->total_cpus;
 			qos_ptr->usage->grp_used_nodes += job_ptr->node_cnt;
+			qos_ptr->usage->grp_used_cpu_run_secs += job_ptr->total_cpus * job_ptr->time_limit * 60;
 			used_limits->jobs++;
 			break;
 		case ACCT_POLICY_JOB_FINI:
@@ -179,6 +180,15 @@ static void _adjust_limit_usage(int type, struct job_record *job_ptr)
 			if((int32_t)qos_ptr->usage->grp_used_nodes < 0) {
 				qos_ptr->usage->grp_used_nodes = 0;
 				debug2("acct_policy_job_fini: grp_used_nodes "
+				       "underflow for qos %s", qos_ptr->name);
+			}
+
+			uint64_t grp_used_cpu_run_secs_old = qos_ptr->usage->grp_used_cpu_run_secs;
+			qos_ptr->usage->grp_used_cpu_run_secs -= job_ptr->total_cpus *
+			  (job_ptr->start_time + job_ptr->time_limit*60 - job_ptr->end_time);
+			if (grp_used_cpu_run_secs_old < qos_ptr->usage->grp_used_cpu_run_secs) {
+				qos_ptr->usage->grp_used_cpu_run_secs = 0;
+				debug2("acct_policy_job_fini: grp_used_cpu_run_secs "
 				       "underflow for qos %s", qos_ptr->name);
 			}
 
@@ -214,6 +224,7 @@ static void _adjust_limit_usage(int type, struct job_record *job_ptr)
 			assoc_ptr->usage->used_jobs++;
 			assoc_ptr->usage->grp_used_cpus += job_ptr->total_cpus;
 			assoc_ptr->usage->grp_used_nodes += job_ptr->node_cnt;
+			assoc_ptr->usage->grp_used_cpu_run_secs += job_ptr->total_cpus * job_ptr->time_limit * 60;
 			break;
 		case ACCT_POLICY_JOB_FINI:
 			if (assoc_ptr->usage->used_jobs)
@@ -238,6 +249,17 @@ static void _adjust_limit_usage(int type, struct job_record *job_ptr)
 				       "underflow for account %s",
 				       assoc_ptr->acct);
 			}
+
+			uint64_t grp_used_cpu_run_secs_old = assoc_ptr->usage->grp_used_cpu_run_secs;
+			assoc_ptr->usage->grp_used_cpu_run_secs -= job_ptr->total_cpus *
+			  (job_ptr->start_time + job_ptr->time_limit*60 - job_ptr->end_time);
+
+			if (grp_used_cpu_run_secs_old < assoc_ptr->usage->grp_used_cpu_run_secs) {
+				assoc_ptr->usage->grp_used_cpu_run_secs = 0;
+				debug2("acct_policy_job_fini: grp_used_cpu_run_secs "
+				       "underflow for account %s", assoc_ptr->acct);
+			}
+			
 			break;
 		default:
 			error("acct_policy: association unknown type %d", type);
@@ -902,6 +924,25 @@ extern bool acct_policy_job_runnable(struct job_record *job_ptr)
 			goto end_it;
 		}
 
+		if (qos_ptr->grp_cpu_run_mins != INFINITE) {
+			if(( qos_ptr->usage->grp_used_cpu_run_secs/60 +
+			     job_ptr->details->min_cpus * job_ptr->time_limit )
+			   > qos_ptr->grp_cpu_run_mins) {
+				job_ptr->state_reason = WAIT_ASSOC_RESOURCE_LIMIT;
+				xfree(job_ptr->state_desc);
+				debug2("job %u being held, "
+				       "qos %s is at or exceeds "
+				       "group max running cpu minutes limit %u "
+				       "with already used %lu + requested %lu ",
+				       job_ptr->job_id, qos_ptr->name,
+				       qos_ptr->grp_cpu_run_mins,
+				       qos_ptr->usage->grp_used_cpu_run_secs/60,
+				       job_ptr->details->min_cpus * job_ptr->time_limit);
+				rc = false;
+				goto end_it;
+			}
+		}
+
 		if ((job_ptr->limit_set_min_nodes != ADMIN_SET_LIMIT)
 		    && qos_ptr->grp_nodes != INFINITE) {
 			if (job_ptr->details->min_nodes > qos_ptr->grp_nodes) {
@@ -1130,6 +1171,29 @@ extern bool acct_policy_job_runnable(struct job_record *job_ptr)
 
 			rc = false;
 			goto end_it;
+		}
+
+		if ((!qos_ptr ||
+		     (qos_ptr && qos_ptr->grp_cpu_run_mins == INFINITE))
+		    && (assoc_ptr->grp_cpu_run_mins != INFINITE)) {
+			if(( assoc_ptr->usage->grp_used_cpu_run_secs/60 +
+			     job_ptr->details->min_cpus * job_ptr->time_limit )
+			   > assoc_ptr->grp_cpu_run_mins) {
+				job_ptr->state_reason = WAIT_ASSOC_RESOURCE_LIMIT;
+				xfree(job_ptr->state_desc);
+				debug2("job %u being held, "
+				       "assoc %u is at or exceeds "
+				       "group max running cpu minutes limit %u "
+				       "with already used %lu + requested %lu "
+				       "for account %s",
+				       job_ptr->job_id, assoc_ptr->id,
+				       assoc_ptr->grp_cpu_run_mins,
+				       assoc_ptr->usage->grp_used_cpu_run_secs/60,
+				       job_ptr->details->min_cpus * job_ptr->time_limit,
+				       assoc_ptr->acct);
+				rc = false;
+				goto end_it;
+			}
 		}
 
 		if ((job_ptr->limit_set_min_nodes != ADMIN_SET_LIMIT)

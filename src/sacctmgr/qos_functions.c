@@ -285,6 +285,14 @@ static int _set_rec(int *start, int argc, char *argv[],
 				       &qos->grp_cpu_mins,
 				       "GrpCPUMins") == SLURM_SUCCESS)
 				set = 1;
+		} else if (!strncasecmp (argv[i], "GrpCPURunMins",
+					 MAX(command_len, 7))) {
+			if(!qos)
+				continue;
+			if (get_uint64(argv[i]+end,
+				       &qos->grp_cpu_run_mins,
+				       "GrpCPURunMins") == SLURM_SUCCESS)
+				set = 1;
 		} else if (!strncasecmp (argv[i], "GrpCpus",
 					 MAX(command_len, 7))) {
 			if(!qos)
@@ -744,6 +752,12 @@ extern int sacctmgr_list_qos(int argc, char *argv[])
 				field->print_routine(
 					field,
 					qos->grp_cpu_mins,
+					(curr_inx == field_count));
+				break;
+			case PRINT_GRPCRM:
+				field->print_routine(
+					field,
+					qos->grp_cpu_run_mins,
 					(curr_inx == field_count));
 				break;
 			case PRINT_GRPC:
