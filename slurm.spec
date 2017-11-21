@@ -54,10 +54,20 @@ Source:		%{slurm_source_dir}.tar.bz2
 # Build with PAM by default on linux
 %bcond_without pam
 
+%if 0%{?rhel} && 0%{?rhel} <= 6
+# el6 uses System V init
+%bcond_with systemd
+%else
+%bcond_without systemd
+%endif
+
 Requires: munge
 
+%if %{with systemd}
 %{?systemd_requires}
 BuildRequires: systemd
+%endif
+
 BuildRequires: munge-devel munge-libs
 BuildRequires: python
 BuildRequires: readline-devel
@@ -122,6 +132,9 @@ BuildRequires: libnuma-devel
 BuildRequires: numactl-devel
 %endif
 %endif
+
+# Prevent _initddir from being clobbered when redefining _sysconfdir.
+%global _initddir %_initddir
 
 #  Allow override of sysconfdir via _slurm_sysconfdir.
 #  Note 'global' instead of 'define' needed here to work around apparent
@@ -324,9 +337,15 @@ rm -rf %{buildroot}
 make install DESTDIR=%{buildroot}
 make install-contrib DESTDIR=%{buildroot}
 
+%if %{with systemd}
 install -D -m644 etc/slurmctld.service %{buildroot}/%{_unitdir}/slurmctld.service
 install -D -m644 etc/slurmd.service    %{buildroot}/%{_unitdir}/slurmd.service
 install -D -m644 etc/slurmdbd.service  %{buildroot}/%{_unitdir}/slurmdbd.service
+%else
+install -D -m755 etc/init.d.slurmctld %{buildroot}%{_initddir}/slurmctld
+install -D -m755 etc/init.d.slurmd    %{buildroot}%{_initddir}/slurmd
+install -D -m755 etc/init.d.slurmdbd  %{buildroot}%{_initddir}/slurmdbd
+%endif
 
 # Do not package Slurm's version of libpmi on Cray systems in the usual location.
 # Cray's version of libpmi should be used. Move it elsewhere if the site still
@@ -381,7 +400,6 @@ rm -f %{buildroot}/%{_mandir}/man5/bluegene*
 rm -f %{buildroot}/%{_sbindir}/sfree
 rm -f %{buildroot}/%{_sbindir}/slurm_epilog
 rm -f %{buildroot}/%{_sbindir}/slurm_prolog
-rm -f %{buildroot}/%{_sysconfdir}/init.d/slurm
 rm -f %{buildroot}/%{_sysconfdir}/init.d/slurmdbd
 rm -f %{buildroot}/%{_perldir}/auto/Slurm/.packlist
 rm -f %{buildroot}/%{_perldir}/auto/Slurm/Slurm.bs
@@ -531,21 +549,33 @@ rm -rf %{buildroot}
 %files slurmctld
 %defattr(-,root,root)
 %{_sbindir}/slurmctld
+%if %{with systemd}
 %{_unitdir}/slurmctld.service
+%else
+%{_initddir}/slurmctld
+%endif
 #############################################################################
 
 %files slurmd
 %defattr(-,root,root)
 %{_sbindir}/slurmd
 %{_sbindir}/slurmstepd
+%if %{with systemd}
 %{_unitdir}/slurmd.service
+%else
+%{_initddir}/slurmd
+%endif
 #############################################################################
 
 %files slurmdbd
 %defattr(-,root,root)
 %{_sbindir}/slurmdbd
 %{_libdir}/slurm/accounting_storage_mysql.so
+%if %{with systemd}
 %{_unitdir}/slurmdbd.service
+%else
+%{_initddir}/slurmdbd
+%endif
 #############################################################################
 
 %files libpmi
@@ -604,33 +634,68 @@ rm -rf %{buildroot}
 %endif
 #############################################################################
 
+# System V init replacements for systemd's RPM scriptlet macros
+# systemd_post, systemd_preun and systemd_postun_with_restart.
+%define init_post() %{expand:if [ $1 -eq 1 ]; then
+    [ -x /sbin/chkconfig ] && /sbin/chkconfig --add %{?1}
+fi
+}
+%define init_preun() %{expand:if [ $1 -eq 0 ]; then
+    if /sbin/service %{?1} status | grep -q running; then
+	/sbin/service %{?1} stop
+    fi
+    [ -x /sbin/chkconfig ] && /sbin/chkconfig --del %{?1}
+fi
+}
+%define init_postun_with_restart() %{expand:if [ $1 -ge 1 ]; then
+    /sbin/service %{?1} condrestart
+fi
+}
+# Use systemd_ or init_ macros depending on what init system is used
+%define slurm_scriptlet() %{expand:%if %{with systemd}
+%systemd_%{?1} %{?2}.service
+%else
+%init_%{?1} %{?2}
+%endif
+}
+
 %pre
+%if %{without systemd}
+# Stop the slurm service. It have been replaced by separate services
+# for slurmctld and slurmd.
+if [ $1 -gt 1 ] ; then
+    if [ -x /etc/init.d/slurm ]; then
+	if /sbin/service slurm status | grep -q running; then
+	    /sbin/service slurm stop
+	fi
+	[ -x /sbin/chkconfig ] && /sbin/chkconfig --del slurm
+    fi
+fi
+%endif
 
 %post
 /sbin/ldconfig
-
 %preun
-
 %postun
 /sbin/ldconfig
 
 %post slurmctld
-%systemd_post slurmctld.service
+%slurm_scriptlet post slurmctld
 %preun slurmctld
-%systemd_preun slurmctld.service
+%slurm_scriptlet preun slurmctld
 %postun slurmctld
-%systemd_postun_with_restart slurmctld.service
+%slurm_scriptlet postun_with_restart slurmctld
 
 %post slurmd
-%systemd_post slurmd.service
+%slurm_scriptlet post slurmd
 %preun slurmd
-%systemd_preun slurmd.service
+%slurm_scriptlet preun slurmd
 %postun slurmd
-%systemd_postun_with_restart slurmd.service
+%slurm_scriptlet postun_with_restart slurmd
 
 %post slurmdbd
-%systemd_post slurmdbd.service
+%slurm_scriptlet post slurmdbd
 %preun slurmdbd
-%systemd_preun slurmdbd.service
+%slurm_scriptlet preun slurmdbd
 %postun slurmdbd
-%systemd_postun_with_restart slurmdbd.service
+%slurm_scriptlet postun_with_restart slurmdbd
