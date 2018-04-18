@@ -174,7 +174,7 @@ case "$1" in
 	$0 start
 	;;
     condrestart)
-	if [ -f /var/lock/subsys/slurm ]; then
+	if [ -f /var/lock/subsys/slurmdbd ]; then
 		 stop slurmdbd
 		 start slurmdbd
 	fi
