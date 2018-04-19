@@ -170,8 +170,8 @@ case "$1" in
 	rc_status -v
 	;;
     restart)
-	$0 stop
-	$0 start
+	stop slurmdbd
+	start slurmdbd
 	;;
     condrestart)
 	if [ -f /var/lock/subsys/slurmdbd ]; then

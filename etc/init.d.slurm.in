@@ -279,8 +279,8 @@ case "$1" in
 	RETVAL=$anystop
 	;;
     restart)
-	$0 stop
-	$0 start
+	slurmstop
+	startall
 	;;
     condrestart)
 	if [ -f /var/lock/subsys/slurm ]; then
