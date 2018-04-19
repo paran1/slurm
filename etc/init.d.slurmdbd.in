@@ -85,7 +85,7 @@ start() {
 
 stop() {
     echo -n "stopping $1: "
-    killproc $1 -TERM
+    killproc -d 60 $1
     rc_status -v
     echo
     rm -f /var/lock/subsys/slurmdbd
