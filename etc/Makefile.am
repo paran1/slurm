@@ -1,4 +1,4 @@
-ETC_FILES = init.d.slurmdbd init.d.slurm \
+ETC_FILES = init.d.slurmctld init.d.slurmd init.d.slurmdbd \
 	    slurmctld.service slurmdbd.service slurmd.service
 
 CLEANFILES = $(ETC_FILES)
@@ -16,8 +16,13 @@ noinst_DATA = $(ETC_FILES)
 init.d.slurmdbd: Makefile $(srcdir)/init.d.slurmdbd.in
 	$(edit) $(srcdir)/init.d.slurmdbd.in > init.d.slurmdbd
 
-init.d.slurm: Makefile $(srcdir)/init.d.slurm.in
-	$(edit) $(srcdir)/init.d.slurm.in > init.d.slurm
+init.d.slurmctld: Makefile $(srcdir)/init.d.slurm.in
+	$(edit) $(srcdir)/init.d.slurm.in | \
+	sed 's|@daemon[@]|$(slurmctld)|g' > init.d.slurmctld
+
+init.d.slurmd: Makefile $(srcdir)/init.d.slurm.in
+	$(edit) $(srcdir)/init.d.slurm.in | \
+	sed 's|@daemon[@]|$(slurmd)|g' > init.d.slurmd
 
 slurmctld.service: Makefile $(srcdir)/slurmctld.service.in
 	$(edit) $(srcdir)/slurmctld.service.in > slurmctld.service

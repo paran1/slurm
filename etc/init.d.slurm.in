@@ -5,30 +5,28 @@
 #              manages exclusive access to a set of compute \
 #              resources and distributes work to those resources.
 #
-# processname: @sbindir@/slurmd
-# pidfile: /var/run/slurmd.pid
-#
-# processname: @sbindir@/slurmctld
-# pidfile: /var/run/slurmctld.pid
+# processname: @sbindir@/@daemon@
+# pidfile: /var/run/@daemon@.pid
 #
 # config: /etc/sysconfig/slurm
 #
 ### BEGIN INIT INFO
-# Provides:          slurm
+# Provides:          @daemon@
 # Required-Start:    $remote_fs $syslog $network munge
 # Required-Stop:     $remote_fs $syslog $network munge
 # Should-Start:      $named
 # Should-Stop:       $named
 # Default-Start:     2 3 4 5
 # Default-Stop:      0 1 6
-# Short-Description: slurm daemon management
-# Description:       Start slurm to provide resource management
+# Short-Description: Slurm @daemon@ daemon
+# Description:       Start Slurm @daemon@
 ### END INIT INFO
 
 BINDIR="@bindir@"
 CONFDIR="@sysconfdir@"
 LIBDIR="@libdir@"
 SBINDIR="@sbindir@"
+DAEMON="@daemon@"
 
 # On a bluegene system this will be set to '#'.
 # Yes, FALSE is the correct variable to look at in the .in script.
@@ -109,7 +107,7 @@ start() {
     $STARTPROC $SBINDIR/$prog $*
     rc_status -v
     echo
-    touch /var/lock/subsys/slurm
+    touch /var/lock/subsys/$DAEMON
 }
 
 stop() {
@@ -117,11 +115,12 @@ stop() {
     killproc $1 -TERM
     rc_status -v
     echo
-    rm -f /var/lock/subsys/slurm
+    rm -f /var/lock/subsys/$DAEMON
 }
 
 startall() {
     for prog in `$BINDIR/scontrol show daemons`; do
+	[[ $prog != $DAEMON ]] && continue
 	optvar=`echo ${prog}_OPTIONS | tr "a-z" "A-Z"`
 	if [[ ${MULTIPLE_SLURMD} == yes ]] && [[ ${prog} == slurmd ]]
 	then
@@ -226,6 +225,7 @@ slurmstatus() {
 #
 slurmstop() {
     for prog in `$BINDIR/scontrol show daemons`; do
+       [[ $prog != $DAEMON ]] && continue
        stop $prog
 
        for i in 1 2 3 4
@@ -270,6 +270,7 @@ case "$1" in
     status)
 	anystop=0
 	for prog in `$BINDIR/scontrol show daemons`; do
+	   [[ $prog != $DAEMON ]] && continue
 	   slurmstatus $prog
 	   rc=$?
 	   if [ $rc != 0 ] ; then
@@ -283,8 +284,9 @@ case "$1" in
 	$0 start
 	;;
     condrestart)
-	if [ -f /var/lock/subsys/slurm ]; then
+	if [ -f /var/lock/subsys/$DAEMON ]; then
 	    for prog in `$BINDIR/scontrol show daemons`; do
+		 [[ $prog != $DAEMON ]] && continue
 		 stop $prog
 		 sleep 1
 		 optvar=`echo ${prog}_OPTIONS | tr "a-z" "A-Z"`
@@ -302,6 +304,7 @@ case "$1" in
 	;;
     reconfig|reload)
 	for prog in `$BINDIR/scontrol show daemons`; do
+	    [[ $prog != $DAEMON ]] && continue
 	    echo -n $"Reloading $prog daemon configuration: "
 	    killproc $prog -HUP
 	    echo
@@ -309,6 +312,7 @@ case "$1" in
 	;;
     test)
 	for prog in `$BINDIR/scontrol show daemons`; do
+	    [[ $prog != $DAEMON ]] && continue
 	    echo "$prog runs here"
 	done
 	;;
